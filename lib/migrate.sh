@@ -63,22 +63,23 @@ migrate_from_realm_rules_dir() {
 
     for f in $(ls "${src_dir}"/rule-*.conf 2>/dev/null | sort -t- -k2 -n); do
         [ -f "$f" ] || continue
+        local row_file="/tmp/.nftpf_realm_row.$$"
         (
             unset RULE_ID RULE_NAME RULE_ROLE SECURITY_LEVEL LISTEN_PORT LISTEN_IP THROUGH_IP
             unset REMOTE_HOST REMOTE_PORT FORWARD_TARGET RULE_NOTE ENABLED BALANCE_MODE TARGET_STATES WEIGHTS
             unset FAILOVER_ENABLED MPTCP_MODE PROXY_MODE PROTOCOL
             # shellcheck source=/dev/null
             source "$f" 2>/dev/null || exit 1
-            printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' \
                 "${RULE_ROLE:-1}" "${SECURITY_LEVEL:-standard}" "${LISTEN_PORT:-}" "${LISTEN_IP:-::}" \
                 "${THROUGH_IP:-::}" "${REMOTE_HOST:-}" "${REMOTE_PORT:-}" "${FORWARD_TARGET:-}" \
                 "${RULE_NOTE:-}" "${ENABLED:-true}" "${BALANCE_MODE:-off}" "${WEIGHTS:-}" \
-                "${FAILOVER_ENABLED:-false}" "${PROTOCOL:-both}" "${MPTCP_MODE:-off}" "${PROXY_MODE:-off}"
-        ) > /tmp/.nftpf_realm_row.$$ 2>/dev/null || continue
+                "${FAILOVER_ENABLED:-false}" "${PROTOCOL:-both}"
+        ) > "$row_file" 2>/dev/null || { rm -f "$row_file"; continue; }
 
         local r_role r_sec r_lport r_lip r_tip r_rhost r_rport r_ftarget r_note r_en r_bal r_w r_fo r_proto
-        IFS=$'\t' read -r r_role r_sec r_lport r_lip r_tip r_rhost r_rport r_ftarget r_note r_en r_bal r_w r_fo r_proto < /tmp/.nftpf_realm_row.$$
-        rm -f /tmp/.nftpf_realm_row.$$
+        IFS=$'\x1f' read -r r_role r_sec r_lport r_lip r_tip r_rhost r_rport r_ftarget r_note r_en r_bal r_w r_fo r_proto < "$row_file"
+        rm -f "$row_file"
 
         [ -z "$r_lport" ] && continue
         if [ "$r_role" = "2" ]; then
@@ -258,7 +259,6 @@ migrate_from_realm_toml() {
 
     local imported=0 skipped=0
     local in_ep=0 listen="" remote="" through="" l_trans=""
-    local _flush_ep
     _flush_ep() {
         [ "$in_ep" -eq 1 ] || return 0
         if [ -n "$listen" ] && [ -n "$remote" ]; then
