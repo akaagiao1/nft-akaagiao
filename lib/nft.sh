@@ -575,6 +575,9 @@ WantedBy=multi-user.target
 EOF
         systemctl daemon-reload
         systemctl enable nftpf.service >/dev/null 2>&1
+        if [ -n "$(get_sorted_rule_files)" ]; then
+            systemctl start nftpf.service >/dev/null 2>&1 || true
+        fi
         echo -e "  ${GREEN}✓${NC} systemd 持久化服务已启用 (nftpf.service)"
     elif [ "$INIT_SYSTEM" = "openrc" ]; then
         cat > "$OPENRC_INIT" <<'EOF'
