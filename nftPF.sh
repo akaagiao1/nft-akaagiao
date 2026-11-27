@@ -39,17 +39,14 @@ _effective_url() {
     fi
 }
 
-# 原子下载：先写入临时目录再 mv -fT，避免下载中断破坏现有脚本
-_download() {
+_download_once() {
     local url="$1" target="$2"
-    local eff_url tmp_dir tmp
-    eff_url=$(_effective_url "$url")
+    local tmp_dir tmp
     tmp_dir=$(mktemp -d "${target}.download.XXXXXX") || return 1
     tmp="$tmp_dir/file"
 
-    if { command -v curl >/dev/null 2>&1 && curl -fsSL --connect-timeout 10 --max-time 60 "$eff_url" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; } ||
-       { command -v wget >/dev/null 2>&1 && wget -q -T 10 -t 2 -O "$tmp" "$eff_url" 2>/dev/null && [ -s "$tmp" ]; }; then
-        tr -d '\r' < "$tmp" > "${tmp}.lf" && mv -f "${tmp}.lf" "$tmp"
+    if { command -v curl >/dev/null 2>&1 && curl -fsSL --connect-timeout 8 --max-time 25 "$url" -o "$tmp" 2>/dev/null && [ -s "$tmp" ]; } ||
+       { command -v wget >/dev/null 2>&1 && wget -q -T 10 -t 1 -O "$tmp" "$url" 2>/dev/null && [ -s "$tmp" ]; }; then
         if mv -fT -- "$tmp" "$target"; then
             rmdir "$tmp_dir" 2>/dev/null || true
             return 0
@@ -59,15 +56,58 @@ _download() {
     return 1
 }
 
+# 原子下载（文本脚本自动清除 CR，支持直连与自动代理回退）
+_download() {
+    local raw_url="$1" target="$2" is_binary="${3:-0}"
+    local -a candidates=()
+    if [ -n "$GH_PROXY_PREFIX" ]; then
+        candidates+=("${GH_PROXY_PREFIX%/}/${raw_url}")
+    fi
+    candidates+=("$raw_url" "https://v6.gh-proxy.org/${raw_url}" "https://ghfast.top/${raw_url}")
+
+    local u
+    for u in "${candidates[@]}"; do
+        if _download_once "$u" "$target"; then
+            if [ "$is_binary" != "1" ]; then
+                tr -d '\r' < "$target" > "${target}.lf" && mv -fT -- "${target}.lf" "$target"
+            fi
+            return 0
+        fi
+    done
+    return 1
+}
+
+_bootstrap_from_tarball() {
+    command -v tar >/dev/null 2>&1 || return 1
+    local tar_url="https://github.com/${REPO_OWNER}/${REPO_NAME}/archive/refs/heads/${REPO_BRANCH}.tar.gz"
+    local tmp_dir
+    tmp_dir=$(mktemp -d /tmp/nftpf-tar.XXXXXX) || return 1
+    local tar_file="${tmp_dir}/repo.tar.gz"
+
+    if _download "$tar_url" "$tar_file" 1 && tar -xzf "$tar_file" -C "$tmp_dir" 2>/dev/null; then
+        local extracted=""
+        extracted=$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -1)
+        if [ -n "$extracted" ] && [ -f "$extracted/nftPF.sh" ] && [ -f "$extracted/lib/core.sh" ]; then
+            _bootstrap_from_local "$extracted"
+            local rc=$?
+            rm -rf -- "$tmp_dir"
+            return "$rc"
+        fi
+    fi
+    rm -rf -- "$tmp_dir"
+    return 1
+}
+
 _bootstrap_from_local() {
     local src_dir="$1"
-    echo -e "${_YELLOW}正在从本地目录安装脚本文件: ${src_dir}${_NC}"
+    echo -e "${_YELLOW}正在安装/更新脚本文件...${_NC}"
     mkdir -p "$LIB_DIR"
-    cp -f "$src_dir/nftPF.sh" "$INSTALL_DIR/nftPF.sh" || return 1
+    tr -d '\r' < "$src_dir/nftPF.sh" > "$INSTALL_DIR/nftPF.sh.new" && mv -fT -- "$INSTALL_DIR/nftPF.sh.new" "$INSTALL_DIR/nftPF.sh" || return 1
     chmod +x "$INSTALL_DIR/nftPF.sh"
     echo -e "  ${_GREEN}✓${_NC} nftPF.sh"
+    local f
     for f in "${LIB_FILES[@]}"; do
-        cp -f "$src_dir/lib/$f" "$LIB_DIR/$f" || return 1
+        tr -d '\r' < "$src_dir/lib/$f" > "$LIB_DIR/$f.new" && mv -fT -- "$LIB_DIR/$f.new" "$LIB_DIR/$f" || return 1
         chmod +x "$LIB_DIR/$f"
         echo -e "  ${_GREEN}✓${_NC} lib/$f"
     done
@@ -89,7 +129,16 @@ _bootstrap() {
     fi
 
     echo -e "${_YELLOW}正在从远端安装/更新脚本文件...${_NC}"
-    echo -e "${_BLUE}源地址: ${REPO_RAW_URL}${_NC}"
+    echo -e "${_BLUE}仓库: https://github.com/${REPO_OWNER}/${REPO_NAME} (${REPO_BRANCH})${_NC}"
+
+    # 优先单次拉取源码归档包（1 次 HTTPS 请求完成全部模块安装，国内网络更稳更快）
+    if _bootstrap_from_tarball; then
+        echo -e "${_GREEN}=== 脚本文件安装完成 ===${_NC}"
+        echo ""
+        return 0
+    fi
+
+    echo -e "${_YELLOW}归档包下载失败，回退逐文件拉取...${_NC}"
     mkdir -p "$LIB_DIR"
 
     if _download "$REPO_RAW_URL/nftPF.sh" "$INSTALL_DIR/nftPF.sh"; then
